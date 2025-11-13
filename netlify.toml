@@ -1,5 +1,0 @@
-# netlify.toml
-[functions]
-  # Default directory for functions is "netlify/functions" already,
-  # but we set it explicitly for clarity.
-  directory = "netlify/functions"
