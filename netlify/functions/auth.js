@@ -2,6 +2,7 @@
 // Register, login, session check, logout using Netlify Blobs + cookie sessions.
 // Also creates an initial player document on registration.
 // Demo only; not production-grade.
+
 import { getStore } from "@netlify/blobs";
 import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
 
@@ -13,6 +14,7 @@ export default async (req, context) => {
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Credentials": "true",
   };
+
   if (req.method === "OPTIONS") return new Response("", { headers: cors });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, cors, 405);
 
@@ -62,7 +64,18 @@ export default async (req, context) => {
       updatedAt: now
     };
     await store.set(playerKey, JSON.stringify(player));
-    return json({ ok: true }, cors);
+
+    // Single-active-session: evict any existing sessions for this uid (safety) and create a fresh session
+    for (const [k, v] of Object.entries(sessions)) {
+      if (v.uid === id) delete sessions[k];
+    }
+    const sid = randomBytes(32).toString("hex");
+    const expiresAt = now + sessionMaxAgeMs;
+    sessions[sid] = { sid, uid: id, name, createdAt: now, expiresAt };
+    await store.set(sessionsKey, JSON.stringify(sessions));
+
+    const cookie = makeSessionCookie(sid, expiresAt, req);
+    return json({ ok: true, name }, { ...cors, "Set-Cookie": cookie });
   }
 
   if (action === "login") {
@@ -76,7 +89,10 @@ export default async (req, context) => {
     const ok = timingSafeEqual(Buffer.from(candidate, "hex"), Buffer.from(u.hash, "hex"));
     if (!ok) return json({ error: "Invalid password" }, cors, 401);
 
-    // Create session
+    // Single-active-session: evict any existing sessions for this user, then create a fresh session
+    for (const [k, v] of Object.entries(sessions)) {
+      if (v.uid === id) delete sessions[k];
+    }
     const sid = randomBytes(32).toString("hex");
     const expiresAt = now + sessionMaxAgeMs;
     sessions[sid] = { sid, uid: id, name: u.name, createdAt: now, expiresAt };

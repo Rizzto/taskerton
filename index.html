@@ -264,6 +264,43 @@ a{color:#9ec1ff}
   });
 })();
 </script>
+
+<script>
+async function syncNow() {
+  const res = await fetch('/.netlify/functions/profile', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'sync' })
+  });
+  const data = await res.json();
+
+  if (data.forceLogout) {
+    // Optional: show a toast/notice to the user
+    console.log('You were logged out because you signed in elsewhere.');
+    // clear server cookies gracefully
+    await fetch('/.netlify/functions/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ action: 'logout' })
+    });
+    // local cleanup if you keep any state
+    // then refresh UI
+    location.reload();
+    return;
+  }
+
+  if (data.ok && data.player) {
+    // ... your existing UI update with data.player ...
+  }
+}
+
+// call syncNow() on load and then every 10s (as README suggests)
+setInterval(syncNow, 10_000);
+syncNow();
+</script>
+
 <noscript>This page needs JavaScript enabled.</noscript>
 </body>
 </html>
