@@ -1,27 +1,33 @@
-# Login/Register Demo — with Sessions + Logout
+# Sessions + Player Progress (offline XP)
 
-Adds cookie-based sessions on top of the earlier login/register demo.
+Adds per-user player data that the game can use:
+- **level** (starts at 1)
+- **xp** (starts at 0)
+- **+1 XP/second** continuously from account creation
+- **Level up every 100 XP**
+- Offline time is applied on login (retroactive)
 
-## Endpoints
-`/.netlify/functions/auth` (POST JSON)
-- `{ action: "register", username, password }` → create user (scrypt-hashed)
-- `{ action: "login", username, password }` → set `demo_session` HttpOnly cookie (7 days)
-- `{ action: "session" }` → returns `{ ok: true, name }` if the cookie is valid; renews expiry (sliding)
-- `{ action: "logout" }` → deletes the session + clears cookie
+## How it works
+- On **register**, `auth.js` also creates `players/<uid>.json` with `{ level:1, xp:0, perLevel:100, perSec:1, lastXpAt:now }`.
+- The frontend calls `/.netlify/functions/profile` with `{ action: "sync" }`:
+  - Server calculates seconds since `lastXpAt` and adds XP.
+  - Applies level-ups (while `xp >= 100`).
+  - Updates `lastXpAt = now` and saves.
+  - Returns `{ level, xp, perLevel, perSec }`.
+- The UI animates +1 XP/second locally and re-syncs every 10s.
 
-## Storage (Netlify Blobs)
-- Store: `auth-demo`
-  - `users.json` → `{ [lowerName]: { name, salt, hash, createdAt } }`
-  - `sessions.json` → `{ [sid]: { sid, uid, name, createdAt, expiresAt } }`
+## Files
+- `index.html` — UI showing Level + XP bar; login/register; logout; background sync.
+- `netlify/functions/auth.js` — auth + session cookies; creates a player doc on registration.
+- `netlify/functions/profile.js` — applies offline XP and returns updated player state.
+- `netlify.toml` — functions directory.
+- `package.json` — `@netlify/blobs` + `netlify-cli`.
 
 ## Local dev
 ```bash
 npm i
 npm run dev   # runs `netlify dev`
 ```
-Open the local URL shown by the CLI. Cookies are set without `Secure` in dev; with `Secure` in production.
 
 ## Deploy
-Push to GitHub and connect in Netlify. No build step required.
-
-> Demo only: for production add CSRF protection, rate limiting, email verification, password reset, session rotation, and store sessions per-key (not a single JSON document) to reduce write contention.
+Push to GitHub and connect in Netlify (no build step).

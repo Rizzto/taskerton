@@ -1,5 +1,6 @@
 // netlify/functions/auth.js
 // Register, login, session check, logout using Netlify Blobs + cookie sessions.
+// Also creates an initial player document on registration.
 // Demo only; not production-grade.
 import { getStore } from "@netlify/blobs";
 import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
@@ -46,6 +47,21 @@ export default async (req, context) => {
     const hash = scryptSync(password, Buffer.from(salt, "hex"), 64).toString("hex");
     users[id] = { name, salt, hash, createdAt: now };
     await store.set(usersKey, JSON.stringify(users));
+
+    // Create initial player doc
+    const playerKey = `players/${id}.json`;
+    const player = {
+      uid: id,
+      name,
+      level: 1,
+      xp: 0,
+      perLevel: 100,
+      perSec: 1,
+      createdAt: now,
+      lastXpAt: now,
+      updatedAt: now
+    };
+    await store.set(playerKey, JSON.stringify(player));
     return json({ ok: true }, cors);
   }
 
@@ -81,7 +97,7 @@ export default async (req, context) => {
       const del = deleteCookie(req);
       return json({ ok: false }, { ...cors, "Set-Cookie": del }, 200);
     }
-    // (Optional) sliding renewal: extend expiry on check
+    // extend expiry (sliding)
     session.expiresAt = now + sessionMaxAgeMs;
     await store.set(sessionsKey, JSON.stringify(sessions));
     const cookie = makeSessionCookie(session.sid, session.expiresAt, req);
@@ -123,7 +139,6 @@ function makeSessionCookie(sid, expiresAt, req) {
   const proto = (req.headers.get("x-forwarded-proto") || "").toLowerCase();
   const secure = proto === "https" ? "; Secure" : "";
   const expires = new Date(expiresAt).toUTCString();
-  // HttpOnly so JS can't read; SameSite=Lax to send with top-level navigations/fetch on same site
   return `demo_session=${encodeURIComponent(sid)}; Path=/; HttpOnly; SameSite=Lax${secure}; Expires=${expires}`;
 }
 

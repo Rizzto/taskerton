@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Login/Register Demo (Sessions)</title>
-<meta name="description" content="Login & register demo using Netlify Functions + Blobs with cookie-based sessions.">
+<title>Login/Register Demo (Sessions + Progress)</title>
+<meta name="description" content="Login & register demo using Netlify Functions + Blobs with cookie-based sessions and per-user offline XP/levels.">
 <style>
-:root{--bg:#0b1020;--card:#131a2a;--muted:#94a3b8;--text:#e9eef5}
+:root{--bg:#0b1020;--card:#131a2a;--muted:#94a3b8;--text:#e9eef5;--accent:#93c5fd}
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Ubuntu,Cantarell,Helvetica Neue,Arial,Noto Sans,sans-serif;background:radial-gradient(1200px 600px at 80% -10%,#1b2540 0,#0b1020 40%),var(--bg);color:var(--text);min-height:100svh;display:grid;place-items:start center;padding:24px}
-.container{width:min(720px,100%);display:flex;flex-direction:column;gap:16px}
+.container{width:min(760px,100%);display:flex;flex-direction:column;gap:16px}
 .banner{display:flex;justify-content:space-between;align-items:center;background:#0e1a36;border:1px solid #203058;border-radius:16px;padding:12px 14px;font-weight:600;display:none}
 .card{background:var(--card);border:1px solid #1f2a44;border-radius:16px;padding:18px;width:100%;box-shadow:0 6px 24px rgba(0,0,0,.35)}
 h1{margin:6px 0 8px;font-size:22px}
@@ -25,6 +25,9 @@ button{padding:10px 14px;border-radius:12px;border:1px solid #2a3b63;background:
 .err{color:#fca5a5}
 a{color:#9ec1ff}
 .hidden{display:none}
+.progress{margin-top:8px;background:#0d1424;border:1px solid #22304f;border-radius:999px;overflow:hidden;height:16px}
+.progress-fill{height:100%;background:linear-gradient(90deg,#4f8ef7,#62e1fb)}
+.statline{display:flex;justify-content:space-between;margin-top:6px;color:#cbd5e1;font-size:14px}
 </style>
 </head>
 <body>
@@ -33,6 +36,16 @@ a{color:#9ec1ff}
       <span id="welcome-text">Logged in, welcome back!</span>
       <button id="logout-btn" type="button">Log out</button>
     </div>
+
+    <section id="profile-card" class="card hidden" aria-labelledby="profile-heading">
+      <h1 id="profile-heading">Player</h1>
+      <div id="stats">
+        <div class="statline"><span>Level</span><strong id="level">1</strong></div>
+        <div class="progress" aria-hidden="true"><div id="xpbar" class="progress-fill" style="width:0%"></div></div>
+        <div class="statline"><span>XP</span><span><strong id="xp">0</strong> / <span id="xpmax">100</span></span></div>
+        <div class="small">Gains +1 XP per second, even while offline. On login, offline time is converted to XP.</div>
+      </div>
+    </section>
 
     <section id="login-card" class="card" aria-labelledby="login-heading">
       <h1 id="login-heading">Login</h1>
@@ -77,7 +90,7 @@ a{color:#9ec1ff}
     </section>
 
     <section class="card">
-      <p><strong>Note:</strong> Demo only. For real apps add email verification, rate limiting, and server-side sessions storage with rotation, etc.</p>
+      <p><strong>Note:</strong> Demo only. For production add rate limiting, per-key Blob docs, CSRF, etc.</p>
     </section>
   </div>
 
@@ -92,26 +105,91 @@ a{color:#9ec1ff}
   const loginStatus = document.getElementById('login-status');
   const regForm = document.getElementById('register-form');
   const regStatus = document.getElementById('register-status');
+  const profileCard = document.getElementById('profile-card');
+  const levelEl = document.getElementById('level');
+  const xpEl = document.getElementById('xp');
+  const xpMaxEl = document.getElementById('xpmax');
+  const xpBar = document.getElementById('xpbar');
 
-  const endpoint = '/.netlify/functions/auth';
+  const authEndpoint = '/.netlify/functions/auth';
+  const profileEndpoint = '/.netlify/functions/profile';
+
+  let local = { name: null, level: 1, xp: 0, perLevel: 100, perSec: 1, lastSyncAt: 0 };
+  let animTimer = null, syncTimer = null;
 
   function setLoggedIn(name){
     welcomeText.textContent = 'Logged in, welcome back ' + name + '!';
     banner.style.display = 'flex';
     loginCard.classList.add('hidden');
     registerCard.classList.add('hidden');
+    profileCard.classList.remove('hidden');
+    local.name = name;
+    startProfileLoop();
   }
 
   function setLoggedOut(){
     banner.style.display = 'none';
     loginCard.classList.remove('hidden');
     registerCard.classList.remove('hidden');
+    profileCard.classList.add('hidden');
+    stopProfileLoop();
+  }
+
+  function render(){
+    levelEl.textContent = local.level;
+    xpEl.textContent = Math.floor(local.xp);
+    xpMaxEl.textContent = local.perLevel;
+    const pct = Math.max(0, Math.min(100, (local.xp / local.perLevel) * 100));
+    xpBar.style.width = pct + '%';
+  }
+
+  function startProfileLoop(){
+    stopProfileLoop();
+    // initial sync applies offline XP
+    syncProfile();
+    // animate +1 XP/second locally
+    animTimer = setInterval(() => {
+      local.xp += local.perSec;
+      while (local.xp >= local.perLevel) {
+        local.xp -= local.perLevel;
+        local.level++;
+      }
+      render();
+    }, 1000);
+    // periodically sync to server to reconcile & persist
+    syncTimer = setInterval(syncProfile, 10000);
+  }
+
+  function stopProfileLoop(){
+    if (animTimer) clearInterval(animTimer);
+    if (syncTimer) clearInterval(syncTimer);
+    animTimer = syncTimer = null;
+  }
+
+  async function syncProfile(){
+    try {
+      const res = await fetch(profileEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'sync' })
+      });
+      const data = await res.json().catch(()=>({}));
+      if (res.ok && data?.ok) {
+        local.level = data.level;
+        local.xp = data.xp;
+        local.perLevel = data.perLevel;
+        local.perSec = data.perSec;
+        local.lastSyncAt = Date.now();
+        render();
+      }
+    } catch {}
   }
 
   // On load, check current session
   (async function checkSession(){
     try {
-      const res = await fetch(endpoint, {
+      const res = await fetch(authEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -129,7 +207,7 @@ a{color:#9ec1ff}
     const username = document.getElementById('register-username').value.trim();
     const password = document.getElementById('register-password').value;
     try {
-      const res = await fetch(endpoint, {
+      const res = await fetch(authEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -152,7 +230,7 @@ a{color:#9ec1ff}
     const username = document.getElementById('login-username').value.trim();
     const password = document.getElementById('login-password').value;
     try {
-      const res = await fetch(endpoint, {
+      const res = await fetch(authEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -162,6 +240,8 @@ a{color:#9ec1ff}
       if (res.ok && data?.ok) {
         setLoggedIn(data.name || username);
         loginStatus.innerHTML = '<span class="ok">Logged in.</span>';
+        // ensure server-side offline XP is applied immediately
+        syncProfile();
       } else {
         loginStatus.innerHTML = '<span class="err">' + (data?.error || 'Login failed') + '</span>';
       }
@@ -172,7 +252,7 @@ a{color:#9ec1ff}
 
   logoutBtn.addEventListener('click', async () => {
     try {
-      const res = await fetch(endpoint, {
+      const res = await fetch(authEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
